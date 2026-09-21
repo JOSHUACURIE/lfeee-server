@@ -25,6 +25,7 @@ model Staff {
 
   recorded_payments Payment[] @relation("RecordedBy")
   sync_logs         SyncLog[]
+  password_resets  PasswordReset[]
 
   @@map("staff")
 }
@@ -315,4 +316,19 @@ model SyncLog {
   @@index([entity_type, entity_id])
   @@index([server_time(sort: Desc)])
   @@map("sync_logs")
+}
+model PasswordReset {
+  id         String   @id @default(uuid()) @db.Uuid
+  staff_id   String   @db.Uuid
+  token_hash String   @unique @db.VarChar(64)
+  expires_at DateTime @db.Timestamptz(3)
+  used       Boolean  @default(false)
+  used_at    DateTime? @db.Timestamptz(3)
+  created_at DateTime @default(now()) @db.Timestamptz(3)
+
+  staff Staff @relation(fields: [staff_id], references: [id], onDelete: Cascade)
+
+  @@index([staff_id])
+  @@index([expires_at])
+  @@map("password_resets")
 }

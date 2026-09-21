@@ -1,12 +1,18 @@
 // src/lib/prisma.js
+import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '@prisma/client';
 import { env } from '../config/env.js';
+
+const adapter = new PrismaPg({
+  connectionString: env.DATABASE_URL,
+});
 
 const logLevels = env.isDev
   ? ['query', 'warn', 'error']
   : ['warn', 'error'];
 
 export const prisma = new PrismaClient({
+  adapter,
   log: logLevels,
 });
 
@@ -27,8 +33,7 @@ if (env.isDev) {
   });
 }
 
-// Graceful shutdown — close the pool when the process exits.
-// Prevents "connection pool timed out" warnings during hot reload.
+// Graceful shutdown
 async function shutdown(signal) {
   try {
     await prisma.$disconnect();
@@ -42,7 +47,6 @@ async function shutdown(signal) {
 
 process.on('SIGINT', () => shutdown('SIGINT'));
 process.on('SIGTERM', () => shutdown('SIGTERM'));
-// nodemon sends SIGUSR2 during reload; catch it so we don't leak connections
 process.once('SIGUSR2', async () => {
   await prisma.$disconnect();
   process.kill(process.pid, 'SIGUSR2');

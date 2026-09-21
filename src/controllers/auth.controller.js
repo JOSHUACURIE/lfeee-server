@@ -1,6 +1,7 @@
 // src/controllers/auth.controller.js
 import * as authService from '../services/auth.service.js';
 
+
 export async function register(req, res) {
   const result = await authService.register(req.body);
   res.status(201).json(result);
