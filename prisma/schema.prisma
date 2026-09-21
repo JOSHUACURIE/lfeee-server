@@ -1,0 +1,318 @@
+// backend/prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ============================================
+// STAFF (who operates the app)
+// ============================================
+
+model Staff {
+  id            String   @id @default(uuid()) @db.Uuid
+  email         String   @unique @db.VarChar(255)
+  full_name     String   @db.VarChar(200)
+  password_hash String   @db.VarChar(255)
+  role          String   @default("bursar") @db.VarChar(20) // "admin" | "bursar" | "clerk"
+  device_code   String?  @unique @db.VarChar(20)            // assigned at first login
+  is_active     Boolean  @default(true)
+  created_at    DateTime @default(now()) @db.Timestamptz(3)
+  updated_at    DateTime @updatedAt @db.Timestamptz(3)
+
+  recorded_payments Payment[] @relation("RecordedBy")
+  sync_logs         SyncLog[]
+
+  @@map("staff")
+}
+
+// ============================================
+// STUDENTS
+// ============================================
+
+model Student {
+  id               String   @id @default(uuid()) @db.Uuid
+  admission_number String   @unique @db.VarChar(50)
+  first_name       String   @db.VarChar(100)
+  last_name        String   @db.VarChar(100)
+  class_name       String?  @db.VarChar(50)   // "Grade 10", "Form 3"
+  stream_name      String?  @db.VarChar(50)   // "Blue", "A"
+  student_type     String   @default("day_scholar") @db.VarChar(20) // "boarder" | "day_scholar"
+  credit_balance   Decimal  @default(0.00) @db.Decimal(10, 2)
+  is_active        Boolean  @default(true)
+  external_id      String?  @unique @db.Uuid  // link back to main DB
+  created_at       DateTime @default(now()) @db.Timestamptz(3)
+  updated_at       DateTime @updatedAt @db.Timestamptz(3)
+
+  assignments StudentFeeAssignment[]
+  invoices    Invoice[]
+  payments    Payment[]
+
+  @@index([admission_number])
+  @@index([class_name])
+  @@index([student_type])
+  @@index([is_active])
+  @@index([updated_at])
+  @@map("students")
+}
+
+// ============================================
+// ACADEMIC SETUP
+// ============================================
+
+model AcademicYear {
+  id         String   @id @default(uuid()) @db.Uuid
+  year_name  String   @unique @db.VarChar(20) // "2025"
+  start_date DateTime @db.Date
+  end_date   DateTime @db.Date
+  is_current Boolean  @default(false)
+  created_at DateTime @default(now()) @db.Timestamptz(3)
+  updated_at DateTime @updatedAt @db.Timestamptz(3)
+
+  terms       Term[]
+  structures  FeeStructure[]
+  assignments StudentFeeAssignment[]
+  invoices    Invoice[]
+
+  @@map("academic_years")
+}
+
+model Term {
+  id               String   @id @default(uuid()) @db.Uuid
+  academic_year_id String   @db.Uuid
+  term_name        String   @db.VarChar(20) // "Term 1"
+  start_date       DateTime @db.Date
+  end_date         DateTime @db.Date
+  is_current       Boolean  @default(false)
+  created_at       DateTime @default(now()) @db.Timestamptz(3)
+  updated_at       DateTime @updatedAt @db.Timestamptz(3)
+
+  academic_year AcademicYear @relation(fields: [academic_year_id], references: [id], onDelete: Cascade)
+
+  term_items  TermFeeItem[]
+  assignments StudentFeeAssignment[]
+  invoices    Invoice[]
+
+  @@unique([academic_year_id, term_name])
+  @@map("terms")
+}
+
+// ============================================
+// FEE STRUCTURE
+// ============================================
+
+model FeeStructure {
+  id               String   @id @default(uuid()) @db.Uuid
+  structure_name   String   @db.VarChar(100)  // "Grade 10 Boarders 2025"
+  academic_year_id String   @db.Uuid
+  class_name       String   @db.VarChar(50)   // "Grade 10"
+  student_type     String   @db.VarChar(20)   // "boarder" | "day_scholar"
+  is_active        Boolean  @default(true)
+  description      String?
+  created_at       DateTime @default(now()) @db.Timestamptz(3)
+  updated_at       DateTime @updatedAt @db.Timestamptz(3)
+
+  academic_year AcademicYear @relation(fields: [academic_year_id], references: [id])
+
+  items       FeeItem[]
+  assignments StudentFeeAssignment[]
+  invoices    Invoice[]
+
+  @@unique([academic_year_id, class_name, student_type])
+  @@index([class_name])
+  @@index([student_type])
+  @@index([updated_at])
+  @@map("fee_structures")
+}
+
+model FeeItem {
+  id               String   @id @default(uuid()) @db.Uuid
+  fee_structure_id String   @db.Uuid
+  item_name        String   @db.VarChar(100)  // "Tuition", "Boarding", "Lunch"
+  description      String?
+  is_compulsory    Boolean  @default(true)
+  display_order    Int      @default(0)
+  created_at       DateTime @default(now()) @db.Timestamptz(3)
+  updated_at       DateTime @updatedAt @db.Timestamptz(3)
+
+  fee_structure FeeStructure @relation(fields: [fee_structure_id], references: [id], onDelete: Cascade)
+
+  term_items    TermFeeItem[]
+  invoice_items InvoiceItem[]
+
+  @@unique([fee_structure_id, item_name])
+  @@map("fee_items")
+}
+
+model TermFeeItem {
+  id          String   @id @default(uuid()) @db.Uuid
+  fee_item_id String   @db.Uuid
+  term_id     String   @db.Uuid
+  amount      Decimal  @db.Decimal(10, 2)
+  created_at  DateTime @default(now()) @db.Timestamptz(3)
+  updated_at  DateTime @updatedAt @db.Timestamptz(3)
+
+  fee_item FeeItem @relation(fields: [fee_item_id], references: [id], onDelete: Cascade)
+  term     Term    @relation(fields: [term_id], references: [id], onDelete: Cascade)
+
+  invoice_items InvoiceItem[]
+
+  @@unique([fee_item_id, term_id])
+  @@map("term_fee_items")
+}
+
+// ============================================
+// FEE ASSIGNMENT (student ↔ structure ↔ term)
+// ============================================
+
+model StudentFeeAssignment {
+  id               String   @id @default(uuid()) @db.Uuid
+  student_id       String   @db.Uuid
+  fee_structure_id String   @db.Uuid
+  academic_year_id String   @db.Uuid
+  term_id          String   @db.Uuid
+  is_active        Boolean  @default(true)
+  assigned_at      DateTime @default(now()) @db.Timestamptz(3)
+
+  student       Student      @relation(fields: [student_id], references: [id], onDelete: Cascade)
+  fee_structure FeeStructure @relation(fields: [fee_structure_id], references: [id], onDelete: Cascade)
+  academic_year AcademicYear @relation(fields: [academic_year_id], references: [id])
+  term          Term         @relation(fields: [term_id], references: [id])
+
+  @@unique([student_id, academic_year_id, term_id])
+  @@index([student_id])
+  @@index([term_id])
+  @@index([fee_structure_id])
+  @@map("student_fee_assignments")
+}
+
+// ============================================
+// INVOICES (the bill)
+// ============================================
+
+model Invoice {
+  id                        String   @id @default(uuid()) @db.Uuid
+  invoice_number            String   @unique @db.VarChar(50)
+  student_id                String   @db.Uuid
+  academic_year_id          String   @db.Uuid
+  term_id                   String   @db.Uuid
+  fee_structure_id          String?  @db.Uuid
+  student_fee_assignment_id String?  @db.Uuid
+  total_amount              Decimal  @db.Decimal(10, 2)
+  amount_paid               Decimal  @default(0.00) @db.Decimal(10, 2)
+  balance                   Decimal  @db.Decimal(10, 2)
+  invoice_date              DateTime @default(now()) @db.Date
+  due_date                  DateTime @db.Date
+  status                    String   @default("pending") @db.VarChar(20) // pending | partial | paid
+  created_at                DateTime @default(now()) @db.Timestamptz(3)
+  updated_at                DateTime @updatedAt @db.Timestamptz(3)
+
+  student       Student      @relation(fields: [student_id], references: [id], onDelete: Cascade)
+  academic_year AcademicYear @relation(fields: [academic_year_id], references: [id])
+  term          Term         @relation(fields: [term_id], references: [id])
+  fee_structure FeeStructure? @relation(fields: [fee_structure_id], references: [id])
+
+  items    InvoiceItem[]
+  payments Payment[]
+
+  @@index([student_id])
+  @@index([term_id])
+  @@index([status])
+  @@index([updated_at])
+  @@map("invoices")
+}
+
+model InvoiceItem {
+  id               String   @id @default(uuid()) @db.Uuid
+  invoice_id       String   @db.Uuid
+  fee_item_id      String?  @db.Uuid
+  term_fee_item_id String?  @db.Uuid
+  item_name        String   @db.VarChar(100)
+  amount           Decimal  @db.Decimal(10, 2)
+  created_at       DateTime @default(now()) @db.Timestamptz(3)
+
+  invoice       Invoice      @relation(fields: [invoice_id], references: [id], onDelete: Cascade)
+  fee_item      FeeItem?     @relation(fields: [fee_item_id], references: [id])
+  term_fee_item TermFeeItem? @relation(fields: [term_fee_item_id], references: [id])
+
+  @@index([invoice_id])
+  @@map("invoice_items")
+}
+
+// ============================================
+// PAYMENT METHODS
+// ============================================
+model PaymentMethod {
+  id           String   @id @default(uuid()) @db.Uuid
+  method_name  String   @unique @db.VarChar(50)   // "cash" | "mpesa" | "bank" | "cheque"
+  display_name String   @db.VarChar(100)
+  is_active    Boolean  @default(true)
+  created_at   DateTime @default(now()) @db.Timestamptz(3)
+
+  @@map("payment_methods")
+}
+
+// ============================================
+// PAYMENTS (the money)
+// ============================================
+
+model Payment {
+  id              String   @id @default(uuid()) @db.Uuid
+  client_id       String?  @unique @db.VarChar(100) // client-generated UUID for idempotency
+  device_id       String?  @db.VarChar(20)          // device code that recorded it
+  receipt_number  String   @unique @db.VarChar(50)
+  student_id      String   @db.Uuid
+  invoice_id      String?  @db.Uuid
+  term_id         String?  @db.Uuid
+  amount          Decimal  @db.Decimal(10, 2)
+payment_method_id String @db.Uuid
+  transaction_ref String?  @db.VarChar(100)
+  payer_name      String?  @db.VarChar(200)
+  payer_phone     String?  @db.VarChar(20)
+  notes           String?
+  recorded_by     String   @db.Uuid
+  payment_date    DateTime @default(now()) @db.Date
+  synced_at       DateTime? @db.Timestamptz(3)
+  created_at      DateTime @default(now()) @db.Timestamptz(3)
+  updated_at      DateTime @updatedAt @db.Timestamptz(3)
+
+  student Student  @relation(fields: [student_id], references: [id])
+  invoice Invoice? @relation(fields: [invoice_id], references: [id])
+  staff   Staff    @relation("RecordedBy", fields: [recorded_by], references: [id])
+
+  @@index([student_id])
+  @@index([invoice_id])
+  @@index([receipt_number])
+  @@index([payment_date])
+  @@index([synced_at])
+  @@index([created_at(sort: Desc)])
+  @@map("payments")
+}
+
+// ============================================
+// SYNC LOG (idempotency + audit of sync)
+// ============================================
+
+model SyncLog {
+  id           String   @id @default(uuid()) @db.Uuid
+  device_id    String   @db.VarChar(20)
+  staff_id     String   @db.Uuid
+  entity_type  String   @db.VarChar(50)   // "payment"
+  entity_id    String   @db.VarChar(100)  // client_id
+  operation    String   @db.VarChar(20)   // "create" | "update"
+  client_time  DateTime @db.Timestamptz(3)
+  server_time  DateTime @default(now()) @db.Timestamptz(3)
+  status       String   @db.VarChar(20)   // "applied" | "conflict" | "rejected"
+  conflict_info Json?
+
+  staff Staff @relation(fields: [staff_id], references: [id])
+
+  @@unique([device_id, entity_type, entity_id, operation])
+  @@index([device_id])
+  @@index([entity_type, entity_id])
+  @@index([server_time(sort: Desc)])
+  @@map("sync_logs")
+}
