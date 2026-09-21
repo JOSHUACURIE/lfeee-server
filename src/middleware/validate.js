@@ -1,14 +1,6 @@
 // src/middleware/validate.js
 import { AppError } from './errorHandler.js';
 
-/**
- * A rule is a function that takes a value and either:
- *   - returns the cleaned value, or
- *   - throws a string describing what's wrong.
- *
- * Pre-built rules below cover the common cases. Compose them with `v.rules([...])`
- * or by writing your own.
- */
 export const rules = {
   string({ min = 0, max = 255, trim = true } = {}) {
     return (value, field) => {
@@ -53,9 +45,7 @@ export const rules = {
     return (value, field) => {
       if (value === undefined || value === null || value === '') return undefined;
       const n = Number(value);
-      if (!Number.isFinite(n)) {
-        throw `${field} must be a number.`;
-      }
+      if (!Number.isFinite(n)) throw `${field} must be a number.`;
       if (integer && !Number.isInteger(n)) {
         throw `${field} must be a whole number.`;
       }
@@ -91,18 +81,11 @@ export const rules = {
     return (value, field) => {
       if (value === undefined || value === null || value === '') return undefined;
       const d = new Date(value);
-      if (Number.isNaN(d.getTime())) {
-        throw `${field} must be a valid date.`;
-      }
+      if (Number.isNaN(d.getTime())) throw `${field} must be a valid date.`;
       return d;
     };
   },
 
-  /**
-   * Compose several rules for the same field.
-   * The first rule that returns a value wins; others still validate.
-   *   rules.compose(rules.string({ trim: true }), rules.oneOf(['cash', 'mpesa']))
-   */
   compose(...fns) {
     return (value, field) => {
       let out = value;
@@ -116,40 +99,20 @@ export const rules = {
 };
 
 /**
- * Validate req.body against a schema.
- *
- *   const schema = {
- *     email: rules.email(),
- *     password: rules.string({ min: 6 }),
- *     role: rules.oneOf(['admin', 'bursar']),
- *   };
- *   router.post('/login', validate(schema), handler);
- *
- * The cleaned object is assigned back to req.body.
- * Any rule that throws aborts with 400 and a clear message.
+ * Validate req.body — the cleaned object is assigned to req.body.
+ * (req.body is writable by default in Express.)
  */
-export function validate(schema, { source = 'body', allowUnknown = true } = {}) {
+export function validate(schema, { allowUnknown = true } = {}) {
   return (req, _res, next) => {
     try {
-      const input = req[source] ?? {};
-      const output = {};
-
-      for (const [field, rule] of Object.entries(schema)) {
-        try {
-          const cleaned = rule(input[field], field);
-          if (cleaned !== undefined) output[field] = cleaned;
-        } catch (msg) {
-          throw new AppError(String(msg), 400, 'VALIDATION');
-        }
-      }
-
+      const input = req.body ?? {};
+      const output = clean(input, schema);
       if (allowUnknown) {
         for (const [k, v] of Object.entries(input)) {
           if (!(k in output)) output[k] = v;
         }
       }
-
-      req[source] = output;
+      req.body = output;
       next();
     } catch (e) {
       next(e);
@@ -158,9 +121,47 @@ export function validate(schema, { source = 'body', allowUnknown = true } = {}) 
 }
 
 /**
- * Validate req.query with the same rules.
- *   router.get('/', validateQuery({ term_id: rules.uuid() }), handler);
+ * Validate req.query — the cleaned object is assigned to req.validatedQuery.
+ * On Node 20+ req.query is a getter-only property, so we must not reassign it.
  */
-export function validateQuery(schema) {
-  return validate(schema, { source: 'query', allowUnknown: true });
+export function validateQuery(schema, { allowUnknown = true } = {}) {
+  return (req, _res, next) => {
+    try {
+      const input = req.query ?? {};
+      const output = clean(input, schema);
+      if (allowUnknown) {
+        for (const [k, v] of Object.entries(input)) {
+          if (!(k in output)) output[k] = v;
+        }
+      }
+      req.validatedQuery = output;
+      next();
+    } catch (e) {
+      next(e);
+    }
+  };
+}
+
+/**
+ * Run each field through its rule. First error aborts with 400.
+ */
+function clean(input, schema) {
+  const output = {};
+  for (const [field, rule] of Object.entries(schema)) {
+    try {
+      const value = rule(input[field], field);
+      if (value !== undefined) output[field] = value;
+    } catch (msg) {
+      throw new AppError(String(msg), 400, 'VALIDATION');
+    }
+  }
+  return output;
+}
+
+/**
+ * Helper: get query params from the validated slot, falling back to raw query.
+ * Use in controllers so they don't care which one exists.
+ */
+export function q(req) {
+  return req.validatedQuery ?? req.query ?? {};
 }
