@@ -2,9 +2,6 @@
 import { prisma } from '../lib/prisma.js';
 import { AppError } from '../middleware/errorHandler.js';
 
-/**
- * Build the WHERE clause for a list query.
- */
 function buildWhere({ q, class_name, student_type, is_active }) {
   const where = {};
 
@@ -27,13 +24,6 @@ function buildWhere({ q, class_name, student_type, is_active }) {
   return where;
 }
 
-/**
- * List students with optional aggregated invoice balance.
- *
- * We do one query for students and one aggregate for balances, then merge
- * in JS. That keeps Prisma simple and avoids a raw groupBy that has to
- * enumerate every student field.
- */
 export async function listStudents(params = {}) {
   const {
     q,
@@ -78,22 +68,26 @@ export async function listStudents(params = {}) {
     });
   }
 
-const enriched = students.map((s) => {
-  const totals = byStudent.get(s.id) ?? { billed: 0, paid: 0, balance: 0 };
-  return {
-    ...s,
-    billed: totals.billed,
-    paid: totals.paid,
-    balance: totals.balance + Number(s.credit_balance ?? 0),
-  };
-});
+  const enriched = students.map((s) => {
+    const totals = byStudent.get(s.id) ?? { billed: 0, paid: 0, balance: 0 };
+    const openingBalance = Number(s.opening_balance ?? 0);
+    const creditBalance = Number(s.credit_balance ?? 0);
+    const net = openingBalance + totals.balance - creditBalance;
+
+    return {
+      ...s,
+      billed: totals.billed,
+      paid: totals.paid,
+      balance: Math.max(net, 0),
+      credit: Math.max(-net, 0),
+      opening_balance: openingBalance,
+      credit_balance: creditBalance,
+    };
+  });
 
   return { students: enriched, total: enriched.length };
 }
 
-/**
- * Single student, with invoices and recent payments.
- */
 export async function getStudent(id) {
   const student = await prisma.student.findUnique({
     where: { id },
@@ -113,7 +107,7 @@ export async function getStudent(id) {
     throw new AppError('Student not found.', 404, 'NOT_FOUND');
   }
 
-  const totals = student.invoices.reduce(
+  const invoiceTotals = student.invoices.reduce(
     (acc, inv) => {
       acc.billed += Number(inv.total_amount);
       acc.paid += Number(inv.amount_paid);
@@ -123,12 +117,22 @@ export async function getStudent(id) {
     { billed: 0, paid: 0, balance: 0 }
   );
 
+  const openingBalance = Number(student.opening_balance ?? 0);
+  const creditBalance = Number(student.credit_balance ?? 0);
+  const net = openingBalance + invoiceTotals.balance - creditBalance;
+
+  const totals = {
+    billed: invoiceTotals.billed,
+    paid: invoiceTotals.paid,
+    balance: Math.max(net, 0),
+    credit: Math.max(-net, 0),
+    opening_balance: openingBalance,
+    credit_balance: creditBalance,
+  };
+
   return { ...student, totals };
 }
 
-/**
- * Distinct classes for filter dropdowns.
- */
 export async function listClasses() {
   const rows = await prisma.student.findMany({
     where: { is_active: true, class_name: { not: null } },
@@ -139,10 +143,6 @@ export async function listClasses() {
   return rows.map((r) => r.class_name).filter(Boolean);
 }
 
-/**
- * Counts for the Ledger filter chips.
- * Returns { all, owing, paid } respecting the same WHERE as listStudents.
- */
 export async function counts(params = {}) {
   const where = buildWhere({
     q: params.q,
@@ -153,11 +153,13 @@ export async function counts(params = {}) {
 
   const students = await prisma.student.findMany({
     where,
-    select: { id: true },
+    select: { id: true, opening_balance: true, credit_balance: true },
   });
 
   const ids = students.map((s) => s.id);
-  if (ids.length === 0) return { all: 0, owing: 0, paid: 0 };
+  if (ids.length === 0) {
+    return { all: 0, owing: 0, cleared: 0, credit: 0, unbilled: 0 };
+  }
 
   const agg = await prisma.invoice.groupBy({
     by: ['student_id'],
@@ -174,21 +176,36 @@ export async function counts(params = {}) {
   }
 
   let owing = 0;
-  let paid = 0;
-  for (const id of ids) {
-    const t = byStudent.get(id);
-    if (!t) continue;
-    if (t.balance > 0) owing++;
-    else if (t.billed > 0) paid++;
+  let cleared = 0;
+  let credit = 0;
+  let unbilled = 0;
+
+  for (const s of students) {
+    const totals = byStudent.get(s.id) ?? { billed: 0, balance: 0 };
+    const opening = Number(s.opening_balance ?? 0);
+    const creditBal = Number(s.credit_balance ?? 0);
+    const net = opening + totals.balance - creditBal;
+
+    if (totals.billed === 0 && opening === 0) {
+      unbilled++;
+    } else if (net < 0) {
+      credit++;
+    } else if (net > 0) {
+      owing++;
+    } else {
+      cleared++;
+    }
   }
 
-  return { all: ids.length, owing, paid };
+  return {
+    all: students.length,
+    owing,
+    cleared,
+    credit,
+    unbilled,
+  };
 }
 
-/**
- * Bulk upsert — used by the import script from the main DB.
- * Upserts on admission_number (unique) so re-running is safe.
- */
 export async function bulkUpsert(students) {
   if (!Array.isArray(students) || students.length === 0) {
     return { inserted: 0, updated: 0 };
@@ -206,6 +223,19 @@ export async function bulkUpsert(students) {
         select: { id: true },
       });
 
+      // Mapping rule:
+      //   If the source explicitly provides opening_balance, use it.
+      //   Otherwise, treat a legacy credit_balance as the opening balance.
+      const openingBalance =
+        s.opening_balance !== undefined
+          ? Number(s.opening_balance)
+          : Number(s.credit_balance ?? 0);
+
+      const creditBalance =
+        s.opening_balance !== undefined
+          ? Number(s.credit_balance ?? 0)
+          : 0;
+
       const data = {
         admission_number: s.admission_number,
         first_name: s.first_name,
@@ -213,7 +243,8 @@ export async function bulkUpsert(students) {
         class_name: s.class_name ?? null,
         stream_name: s.stream_name ?? null,
         student_type: s.student_type ?? 'day_scholar',
-        credit_balance: s.credit_balance ?? 0,
+        opening_balance: openingBalance,
+        credit_balance: creditBalance,
         is_active: s.is_active ?? true,
         external_id: s.external_id ?? null,
       };

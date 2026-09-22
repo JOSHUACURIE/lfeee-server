@@ -43,7 +43,7 @@ export async function preview({ fee_structure_id, term_id }) {
     orderBy: [{ last_name: 'asc' }, { first_name: 'asc' }],
   });
 
-  // Which of these already have an invoice for this (structure, term)?
+  // Which already have an invoice for this (structure, term)?
   const existing = await prisma.invoice.findMany({
     where: {
       fee_structure_id: structure.id,
@@ -81,7 +81,8 @@ export async function preview({ fee_structure_id, term_id }) {
       name: `${s.first_name} ${s.last_name}`,
       class_name: s.class_name,
       stream_name: s.stream_name,
-      opening_balance: Number(s.credit_balance ?? 0),
+      opening_balance: Number(s.opening_balance ?? 0),
+      credit_balance: Number(s.credit_balance ?? 0),
       already_billed: alreadyBilled.has(s.id),
     })),
   };
@@ -89,8 +90,16 @@ export async function preview({ fee_structure_id, term_id }) {
 
 /**
  * Assign the fee structure to all matching students for the term.
- * Creates one invoice per student, with one invoice item per priced fee item.
- * Includes an "Opening balance" line if the student has credit_balance > 0.
+ *
+ * For each student:
+ *   1. Compute gross = perStudentTotal + opening_balance
+ *   2. Apply as much of credit_balance as possible to reduce the net
+ *   3. Create the invoice with:
+ *        total_amount  = gross
+ *        amount_paid   = appliedCredit
+ *        balance       = gross - appliedCredit
+ *   4. Zero the student's opening_balance (it's now on the invoice)
+ *   5. Reduce the student's credit_balance by appliedCredit
  */
 export async function assign({ fee_structure_id, term_id }, staffId) {
   const structure = await prisma.feeStructure.findUnique({
@@ -121,6 +130,11 @@ export async function assign({ fee_structure_id, term_id }, staffId) {
     );
   }
 
+  const perStudentTotal = pricedItems.reduce(
+    (sum, i) => sum + Number(i.term_items[0].amount),
+    0
+  );
+
   const students = await prisma.student.findMany({
     where: {
       class_name: structure.class_name,
@@ -134,12 +148,12 @@ export async function assign({ fee_structure_id, term_id }, staffId) {
       matched: 0,
       assigned: 0,
       skipped: 0,
+      per_student_total: perStudentTotal,
       total_billed: 0,
-      per_student_total: 0,
     };
   }
 
-  // Skip students who already have an invoice from this structure for this term
+  // Skip students already invoiced for this structure + term
   const existing = await prisma.invoice.findMany({
     where: {
       fee_structure_id: structure.id,
@@ -160,109 +174,86 @@ export async function assign({ fee_structure_id, term_id }, staffId) {
       continue;
     }
 
-    const perStudentTotal = pricedItems.reduce(
-      (sum, i) => sum + Number(i.term_items[0].amount),
-      0
-    );
-    const openingBalance = Number(student.credit_balance ?? 0);
-    const totalAmount = perStudentTotal + openingBalance;
-// Inside assign(), for each student:
-await prisma.$transaction(async (tx) => {
-  const invoiceNumber = await nextInvoiceNumber(tx);
+    const openingBalance = Number(student.opening_balance ?? 0);
+    const credit = Number(student.credit_balance ?? 0);
 
-  const credit = Number(student.credit_balance ?? 0);
-  const grossTotal = perStudentTotal + openingBalance;
-  const appliedCredit = Math.min(credit, grossTotal);
-  const netBalance = grossTotal - appliedCredit;
+    const grossTotal = perStudentTotal + openingBalance;
+    const appliedCredit = Math.min(credit, grossTotal);
+    const netBalance = grossTotal - appliedCredit;
 
-  // Create the invoice with the credit already applied
-  const invoice = await tx.invoice.create({
-    data: {
-      invoice_number: invoiceNumber,
-      student_id: student.id,
-      academic_year_id: term.academic_year_id,
-      term_id: term.id,
-      fee_structure_id: structure.id,
-      total_amount: grossTotal,
-      amount_paid: appliedCredit,
-      balance: netBalance,
-      invoice_date: new Date(),
-      due_date: term.end_date,
-      status: netBalance <= 0 ? 'paid' : appliedCredit > 0 ? 'partial' : 'pending',
-    },
-  });
+    await prisma.$transaction(async (tx) => {
+      const invoiceNumber = await nextInvoiceNumber(tx);
 
-  // Invoice items: one per fee item
-  for (const item of pricedItems) {
-    const termItem = item.term_items[0];
-    await tx.invoiceItem.create({
-      data: {
-        invoice_id: invoice.id,
-        fee_item_id: item.id,
-        term_fee_item_id: termItem.id,
-        item_name: item.item_name,
-        amount: Number(termItem.amount),
-      },
+      // 1. Create the invoice
+      const invoice = await tx.invoice.create({
+        data: {
+          invoice_number: invoiceNumber,
+          student_id: student.id,
+          academic_year_id: term.academic_year_id,
+          term_id: term.id,
+          fee_structure_id: structure.id,
+          total_amount: grossTotal,
+          amount_paid: appliedCredit,
+          balance: netBalance,
+          invoice_date: new Date(),
+          due_date: term.end_date,
+          status: netBalance <= 0 ? 'paid' : appliedCredit > 0 ? 'partial' : 'pending',
+        },
+      });
+
+      // 2. Line items for each priced fee item
+      for (const item of pricedItems) {
+        const termItem = item.term_items[0];
+        await tx.invoiceItem.create({
+          data: {
+            invoice_id: invoice.id,
+            fee_item_id: item.id,
+            term_fee_item_id: termItem.id,
+            item_name: item.item_name,
+            amount: Number(termItem.amount),
+          },
+        });
+      }
+
+      // 3. Opening balance line, if any
+      if (openingBalance > 0) {
+        await tx.invoiceItem.create({
+          data: {
+            invoice_id: invoice.id,
+            item_name: 'Opening balance',
+            amount: openingBalance,
+          },
+        });
+      }
+
+      // 4. Consume the student's opening_balance and credit_balance
+      //    (we do both updates in one call so it's atomic)
+      if (openingBalance > 0 || appliedCredit > 0) {
+        await tx.student.update({
+          where: { id: student.id },
+          data: {
+            opening_balance: 0,
+            credit_balance: credit - appliedCredit,
+          },
+        });
+      }
     });
-  }
-
-  // Opening balance line (moving credit_balance onto the invoice)
-  if (openingBalance > 0) {
-    await tx.invoiceItem.create({
-      data: {
-        invoice_id: invoice.id,
-        item_name: 'Opening balance',
-        amount: openingBalance,
-      },
-    });
-  }
-
-  // Applied credit line (so the invoice itself shows why it's partially paid)
-  if (appliedCredit > 0) {
-    await tx.invoiceItem.create({
-      data: {
-        invoice_id: invoice.id,
-        item_name: 'Credit applied',
-        amount: -appliedCredit, // negative = reduces total
-      },
-    });
-  }
-
-  // Consume the credit on the student
-  if (appliedCredit > 0) {
-    await tx.student.update({
-      where: { id: student.id },
-      data: { credit_balance: credit - appliedCredit },
-    });
-  }
-
-  // Zero out any opening balance that was folded into the invoice
-  if (openingBalance > 0) {
-    await tx.student.update({
-      where: { id: student.id },
-      data: { credit_balance: { decrement: openingBalance } },
-    });
-  }
-});
 
     assigned++;
-    totalBilled += totalAmount;
+    totalBilled += netBalance;
   }
 
   return {
     matched: students.length,
     assigned,
     skipped,
-    per_student_total: pricedItems.reduce(
-      (sum, i) => sum + Number(i.term_items[0].amount),
-      0
-    ),
+    per_student_total: perStudentTotal,
     total_billed: totalBilled,
   };
 }
 
 /**
- * List assignments for a term (i.e. invoices created by assignments).
+ * List invoices for a term, with student and structure info attached.
  */
 export async function listForTerm({ term_id }) {
   const where = term_id ? { term_id } : {};

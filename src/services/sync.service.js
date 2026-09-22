@@ -6,15 +6,6 @@ import { applyPaymentToInvoice } from './payments.service.js';
 /**
  * Server-side handler for a push from a device.
  * Applies the queued operation idempotently.
- *
- * Payload shape (from mobile):
- *   {
- *     entity_type: 'payment',
- *     entity_id:   '<client-generated uuid>',
- *     operation:   'create' | 'update',
- *     payload:     { ...payment fields },
- *     client_time: '<iso>'
- *   }
  */
 export async function applyPush(
   { entity_type, entity_id, operation, payload, client_time },
@@ -93,10 +84,7 @@ async function applyPayment(payload, entityId, staffId, clientTime, operation) {
     throw new AppError('Payment method is required.', 400, 'MISSING_METHOD');
   }
 
-  // Apply the payment — the shared service handles:
-  //   - invoice settlement
-  //   - overpayment going to student credit
-  //   - receipt number collision
+  // Apply the payment in a transaction
   const result = await prisma.$transaction(async (tx) => {
     const applied = await applyPaymentToInvoice({
       tx,
@@ -151,25 +139,42 @@ export async function getChangesSince(sinceIso) {
   const since = sinceIso ? new Date(sinceIso) : new Date('1970-01-01');
   const serverTime = new Date();
 
-  const [students, invoices] = await Promise.all([
-    prisma.student.findMany({
-      where: { updated_at: { gt: since } },
-    }),
-    prisma.invoice.findMany({
-      where: { updated_at: { gt: since } },
-      include: { items: true },
-    }),
-  ]);
+  const [students, invoices, feeStructures, terms, paymentMethods] =
+    await Promise.all([
+      prisma.student.findMany({
+        where: { updated_at: { gt: since } },
+      }),
+      prisma.invoice.findMany({
+        where: { updated_at: { gt: since } },
+        include: { items: true },
+      }),
+      prisma.feeStructure.findMany({
+        where: { updated_at: { gt: since } },
+        include: {
+          items: {
+            include: { term_items: true },
+          },
+        },
+      }),
+      prisma.term.findMany({
+        where: { updated_at: { gt: since } },
+      }),
+      prisma.paymentMethod.findMany(),
+    ]);
 
-  // Enrich students with computed balances so the client can show them offline.
+  // Enrich students with computed invoice totals so the client can render
+  // balances offline. opening_balance and credit_balance come from the
+  // Student row itself (spread carries them through).
   const ids = students.map((s) => s.id);
   let enriched = students;
+
   if (ids.length > 0) {
     const agg = await prisma.invoice.groupBy({
       by: ['student_id'],
       where: { student_id: { in: ids } },
       _sum: { total_amount: true, amount_paid: true, balance: true },
     });
+
     const byStudent = new Map();
     for (const row of agg) {
       byStudent.set(row.student_id, {
@@ -178,20 +183,15 @@ export async function getChangesSince(sinceIso) {
         balance: Number(row._sum.balance ?? 0),
       });
     }
+
     enriched = students.map((s) => {
       const totals = byStudent.get(s.id) ?? { billed: 0, paid: 0, balance: 0 };
       return {
         ...s,
-        // The billed amount the school has invoiced
         billed: totals.billed,
-        // Payments that have been applied to invoices
         paid: totals.paid,
-        // What the student still owes on their invoices
         balance: totals.balance,
-        // Legacy debt carried forward (not yet folded into an invoice)
-        opening_balance: Number(s.opening_balance ?? 0),
-        // Overpayment credit accumulated
-        credit_balance: Number(s.credit_balance ?? 0),
+        // opening_balance and credit_balance pass through via the spread
       };
     });
   }
@@ -199,6 +199,9 @@ export async function getChangesSince(sinceIso) {
   return {
     students: enriched,
     invoices,
+    fee_structures: feeStructures,
+    terms,
+    payment_methods: paymentMethods,
     server_time: serverTime.toISOString(),
   };
 }
