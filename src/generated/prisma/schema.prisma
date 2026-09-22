@@ -2,7 +2,7 @@
 
 generator client {
   provider = "prisma-client-js"
-   output   = "../src/generated/prisma"
+  output   = "../src/generated/prisma"
 }
 
 datasource db {
@@ -19,14 +19,14 @@ model Staff {
   full_name     String   @db.VarChar(200)
   password_hash String   @db.VarChar(255)
   role          String   @default("bursar") @db.VarChar(20) // "admin" | "bursar" | "clerk"
-  device_code   String?  @unique @db.VarChar(20)            // assigned at first login
+  device_code   String?  @unique @db.VarChar(20) // assigned at first login
   is_active     Boolean  @default(true)
   created_at    DateTime @default(now()) @db.Timestamptz(3)
   updated_at    DateTime @updatedAt @db.Timestamptz(3)
 
-  recorded_payments Payment[] @relation("RecordedBy")
+  recorded_payments Payment[]       @relation("RecordedBy")
   sync_logs         SyncLog[]
-  password_resets  PasswordReset[]
+  password_resets   PasswordReset[]
 
   @@map("staff")
 }
@@ -40,13 +40,13 @@ model Student {
   admission_number String   @unique @db.VarChar(50)
   first_name       String   @db.VarChar(100)
   last_name        String   @db.VarChar(100)
-  class_name       String?  @db.VarChar(50)   // "Grade 10", "Form 3"
-  stream_name      String?  @db.VarChar(50)   // "Blue", "A"
+  class_name       String?  @db.VarChar(50) // "Grade 10", "Form 3"
+  stream_name      String?  @db.VarChar(50) // "Blue", "A"
   student_type     String   @default("day_scholar") @db.VarChar(20) // "boarder" | "day_scholar"
   opening_balance  Decimal  @default(0.00) @db.Decimal(10, 2)
   credit_balance   Decimal  @default(0.00) @db.Decimal(10, 2)
   is_active        Boolean  @default(true)
-  external_id      String?  @unique @db.Uuid  // link back to main DB
+  external_id      String?  @unique @db.Uuid // link back to main DB
   created_at       DateTime @default(now()) @db.Timestamptz(3)
   updated_at       DateTime @updatedAt @db.Timestamptz(3)
 
@@ -109,10 +109,10 @@ model Term {
 
 model FeeStructure {
   id               String   @id @default(uuid()) @db.Uuid
-  structure_name   String   @db.VarChar(100)  // "Grade 10 Boarders 2025"
+  structure_name   String   @db.VarChar(100) // "Grade 10 Boarders 2025"
   academic_year_id String   @db.Uuid
-  class_name       String   @db.VarChar(50)   // "Grade 10"
-  student_type     String   @db.VarChar(20)   // "boarder" | "day_scholar"
+  class_name       String   @db.VarChar(50) // "Grade 10"
+  student_type     String   @db.VarChar(20) // "boarder" | "day_scholar"
   is_active        Boolean  @default(true)
   description      String?
   created_at       DateTime @default(now()) @db.Timestamptz(3)
@@ -134,7 +134,7 @@ model FeeStructure {
 model FeeItem {
   id               String   @id @default(uuid()) @db.Uuid
   fee_structure_id String   @db.Uuid
-  item_name        String   @db.VarChar(100)  // "Tuition", "Boarding", "Lunch"
+  item_name        String   @db.VarChar(100) // "Tuition", "Boarding", "Lunch"
   description      String?
   is_compulsory    Boolean  @default(true)
   display_order    Int      @default(0)
@@ -213,9 +213,9 @@ model Invoice {
   created_at                DateTime @default(now()) @db.Timestamptz(3)
   updated_at                DateTime @updatedAt @db.Timestamptz(3)
 
-  student       Student      @relation(fields: [student_id], references: [id], onDelete: Cascade)
-  academic_year AcademicYear @relation(fields: [academic_year_id], references: [id])
-  term          Term         @relation(fields: [term_id], references: [id])
+  student       Student       @relation(fields: [student_id], references: [id], onDelete: Cascade)
+  academic_year AcademicYear  @relation(fields: [academic_year_id], references: [id])
+  term          Term          @relation(fields: [term_id], references: [id])
   fee_structure FeeStructure? @relation(fields: [fee_structure_id], references: [id])
 
   items    InvoiceItem[]
@@ -250,7 +250,7 @@ model InvoiceItem {
 // ============================================
 model PaymentMethod {
   id           String   @id @default(uuid()) @db.Uuid
-  method_name  String   @unique @db.VarChar(50)   // "cash" | "mpesa" | "bank" | "cheque"
+  method_name  String   @unique @db.VarChar(50) // "cash" | "mpesa" | "bank" | "cheque"
   display_name String   @db.VarChar(100)
   is_active    Boolean  @default(true)
   created_at   DateTime @default(now()) @db.Timestamptz(3)
@@ -263,24 +263,24 @@ model PaymentMethod {
 // ============================================
 
 model Payment {
-  id              String   @id @default(uuid()) @db.Uuid
-  client_id       String?  @unique @db.VarChar(100) // client-generated UUID for idempotency
-  device_id       String?  @db.VarChar(20)          // device code that recorded it
-  receipt_number  String   @unique @db.VarChar(50)
-  student_id      String   @db.Uuid
-  invoice_id      String?  @db.Uuid
-  term_id         String?  @db.Uuid
-  amount          Decimal  @db.Decimal(10, 2)
-payment_method_id String @db.Uuid
-  transaction_ref String?  @db.VarChar(100)
-  payer_name      String?  @db.VarChar(200)
-  payer_phone     String?  @db.VarChar(20)
-  notes           String?
-  recorded_by     String   @db.Uuid
-  payment_date    DateTime @default(now()) @db.Date
-  synced_at       DateTime? @db.Timestamptz(3)
-  created_at      DateTime @default(now()) @db.Timestamptz(3)
-  updated_at      DateTime @updatedAt @db.Timestamptz(3)
+  id                String    @id @default(uuid()) @db.Uuid
+  client_id         String?   @unique @db.VarChar(100) // client-generated UUID for idempotency
+  device_id         String?   @db.VarChar(20) // device code that recorded it
+  receipt_number    String    @unique @db.VarChar(50)
+  student_id        String    @db.Uuid
+  invoice_id        String?   @db.Uuid
+  term_id           String?   @db.Uuid
+  amount            Decimal   @db.Decimal(10, 2)
+  payment_method_id String    @db.Uuid
+  transaction_ref   String?   @db.VarChar(100)
+  payer_name        String?   @db.VarChar(200)
+  payer_phone       String?   @db.VarChar(20)
+  notes             String?
+  recorded_by       String    @db.Uuid
+  payment_date      DateTime  @default(now()) @db.Date
+  synced_at         DateTime? @db.Timestamptz(3)
+  created_at        DateTime  @default(now()) @db.Timestamptz(3)
+  updated_at        DateTime  @updatedAt @db.Timestamptz(3)
 
   student Student  @relation(fields: [student_id], references: [id])
   invoice Invoice? @relation(fields: [invoice_id], references: [id])
@@ -300,15 +300,15 @@ payment_method_id String @db.Uuid
 // ============================================
 
 model SyncLog {
-  id           String   @id @default(uuid()) @db.Uuid
-  device_id    String   @db.VarChar(20)
-  staff_id     String   @db.Uuid
-  entity_type  String   @db.VarChar(50)   // "payment"
-  entity_id    String   @db.VarChar(100)  // client_id
-  operation    String   @db.VarChar(20)   // "create" | "update"
-  client_time  DateTime @db.Timestamptz(3)
-  server_time  DateTime @default(now()) @db.Timestamptz(3)
-  status       String   @db.VarChar(20)   // "applied" | "conflict" | "rejected"
+  id            String   @id @default(uuid()) @db.Uuid
+  device_id     String   @db.VarChar(20)
+  staff_id      String   @db.Uuid
+  entity_type   String   @db.VarChar(50) // "payment"
+  entity_id     String   @db.VarChar(100) // client_id
+  operation     String   @db.VarChar(20) // "create" | "update"
+  client_time   DateTime @db.Timestamptz(3)
+  server_time   DateTime @default(now()) @db.Timestamptz(3)
+  status        String   @db.VarChar(20) // "applied" | "conflict" | "rejected"
   conflict_info Json?
 
   staff Staff @relation(fields: [staff_id], references: [id])
@@ -319,14 +319,15 @@ model SyncLog {
   @@index([server_time(sort: Desc)])
   @@map("sync_logs")
 }
+
 model PasswordReset {
-  id         String   @id @default(uuid()) @db.Uuid
-  staff_id   String   @db.Uuid
-  token_hash String   @unique @db.VarChar(64)
-  expires_at DateTime @db.Timestamptz(3)
-  used       Boolean  @default(false)
+  id         String    @id @default(uuid()) @db.Uuid
+  staff_id   String    @db.Uuid
+  token_hash String    @unique @db.VarChar(64)
+  expires_at DateTime  @db.Timestamptz(3)
+  used       Boolean   @default(false)
   used_at    DateTime? @db.Timestamptz(3)
-  created_at DateTime @default(now()) @db.Timestamptz(3)
+  created_at DateTime  @default(now()) @db.Timestamptz(3)
 
   staff Staff @relation(fields: [staff_id], references: [id], onDelete: Cascade)
 
