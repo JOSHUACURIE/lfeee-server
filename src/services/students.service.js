@@ -78,10 +78,15 @@ export async function listStudents(params = {}) {
     });
   }
 
-  const enriched = students.map((s) => {
-    const totals = byStudent.get(s.id) ?? { billed: 0, paid: 0, balance: 0 };
-    return { ...s, ...totals };
-  });
+const enriched = students.map((s) => {
+  const totals = byStudent.get(s.id) ?? { billed: 0, paid: 0, balance: 0 };
+  return {
+    ...s,
+    billed: totals.billed,
+    paid: totals.paid,
+    balance: totals.balance + Number(s.credit_balance ?? 0),
+  };
+});
 
   return { students: enriched, total: enriched.length };
 }

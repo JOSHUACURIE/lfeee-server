@@ -42,6 +42,7 @@ model Student {
   class_name       String?  @db.VarChar(50)   // "Grade 10", "Form 3"
   stream_name      String?  @db.VarChar(50)   // "Blue", "A"
   student_type     String   @default("day_scholar") @db.VarChar(20) // "boarder" | "day_scholar"
+  opening_balance  Decimal  @default(0.00) @db.Decimal(10, 2)
   credit_balance   Decimal  @default(0.00) @db.Decimal(10, 2)
   is_active        Boolean  @default(true)
   external_id      String?  @unique @db.Uuid  // link back to main DB
